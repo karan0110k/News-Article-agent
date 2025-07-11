@@ -1,0 +1,9 @@
+langchain
+langchain-community
+openai # This is for the OpenAI-compatible API, which Kluster AI uses
+streamlit
+faiss-cpu
+unstructured[html] # For UnstructuredURLLoader
+python-dotenv
+tiktoken # Used by OpenAI for token counting
+
