@@ -1,7 +1,7 @@
 langchain
 langchain-community
 langchain-openai
-openai 
+openai
 python-dotenv
 tiktoken
 
@@ -12,11 +12,11 @@ streamlit
 faiss-cpu
 
 # Document Loaders
-pypdf # For PDF resumes
-unstructured[html] # For web pages
+pypdf
+unstructured[html]
 
 # Voice I/O
-murf-python # For Text-to-Speech
-google-cloud-speech # For Speech-to-Text
-sounddevice # For recording audio
-scipy # For saving audio files
+murf
+google-cloud-speech
+sounddevice
+scipy
