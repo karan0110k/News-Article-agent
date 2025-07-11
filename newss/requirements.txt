@@ -1,9 +1,22 @@
 langchain
 langchain-community
-openai # This is for the OpenAI-compatible API, which Kluster AI uses
-streamlit
-faiss-cpu
-unstructured[html] # For UnstructuredURLLoader
+langchain-openai
+openai 
 python-dotenv
-tiktoken # Used by OpenAI for token counting
+tiktoken
 
+# UI Framework
+streamlit
+
+# Vector Store
+faiss-cpu
+
+# Document Loaders
+pypdf # For PDF resumes
+unstructured[html] # For web pages
+
+# Voice I/O
+murf-python # For Text-to-Speech
+google-cloud-speech # For Speech-to-Text
+sounddevice # For recording audio
+scipy # For saving audio files
