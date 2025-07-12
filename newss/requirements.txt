@@ -20,3 +20,4 @@ murf
 google-cloud-speech
 sounddevice
 scipy
+gtts
