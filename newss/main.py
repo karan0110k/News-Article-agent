@@ -460,18 +460,17 @@ def text_to_speech(text):
 def create_and_save_vector_store(urls, _embeddings_model):
     urls_string = "\n".join(sorted(urls))
     index_hash = hashlib.md5(urls_string.encode()).hexdigest()
-    index_file_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}.pkl")
+    index_dir_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}")
 
-    if os.path.exists(index_file_path):
+    if os.path.exists(index_dir_path):
         try:
-            with open(index_file_path, "rb") as f:
-                return pickle.load(f)
-        except (pickle.UnpicklingError, EOFError):
-            logging.warning("Failed to load cached index, rebuilding.")
+            return FAISS.load_local(index_dir_path, _embeddings_model)
+        except Exception:
+            logging.warning("⚠️ Failed to load cached FAISS index, rebuilding...")
 
     with st.spinner("🔍 Validating URLs..."):
         valid_urls = [url for url in urls if is_valid_url(url)]
-    
+
     if not valid_urls:
         raise ValueError("No valid URLs provided or all URLs failed to connect. Please check the links.")
 
@@ -493,18 +492,13 @@ def create_and_save_vector_store(urls, _embeddings_model):
         docs = text_splitter.split_documents(data)
     if not docs:
         raise ValueError("Failed to split documents. The content might be empty.")
-    
+
     try:
         with st.spinner("🧠 Creating vector embeddings..."):
             vectorstore = FAISS.from_documents(docs, _embeddings_model)
+            vectorstore.save_local(index_dir_path)
     except Exception as e:
-        raise RuntimeError(f"Failed to create vector embeddings. Error: {e}")
-
-    try:
-        with open(index_file_path, "wb") as f:
-            pickle.dump(vectorstore, f)
-    except Exception as e:
-        logging.error(f"Failed to save vector store cache: {e}")
+        raise RuntimeError(f"Failed to create/save vector embeddings. Error: {e}")
 
     return vectorstore
 
