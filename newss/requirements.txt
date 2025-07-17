@@ -1,26 +1,13 @@
-langchain
+streamlit
+python-dotenv
+beautifulsoup4
+lxml
+faiss-cpu
+langchain-core
 langchain-community
 langchain-openai
-openai
-python-dotenv
-tiktoken
-
-# UI Framework
-streamlit
-
-# Vector Store
-faiss-cpu
-
-# Document Loaders
-pypdf
-unstructured[html]
-
-# Voice I/O
-murf
-google-cloud-speech
-sounddevice
-scipy
-gtts
-
-langchain-google-genai 
-
+langchain-google-genai
+langchain-together
+gTTS
+requests
+nest-asyncio
