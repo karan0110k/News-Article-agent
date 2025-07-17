@@ -370,6 +370,7 @@ GOOGLE_EMBEDDING_MODEL_NAME = os.getenv("GOOGLE_EMBEDDING_MODEL_NAME")
 
 
 # --- Initialize LLM and Embeddings (Cached for efficiency) ---
+# --- Initialize LLM and Embeddings (Cached for efficiency) ---
 @st.cache_resource
 def get_llm_and_embeddings(): 
     llm = None
@@ -386,7 +387,7 @@ def get_llm_and_embeddings():
             google_api_key=GOOGLE_API_KEY,
             model=GOOGLE_CHAT_MODEL_NAME,
             temperature=0.3,
-            streaming=True
+            # REMOVE THIS LINE: streaming=True
         )
         # Initialize GoogleGenerativeAIEmbeddings for embeddings
         embeddings = GoogleGenerativeAIEmbeddings(
