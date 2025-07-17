@@ -828,6 +828,7 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
                 st.markdown("</div>", unsafe_allow_html=True)
 
         # Research Assistant
+        # Research Assistant
         st.markdown('<div class="section-title">💬 Research Assistant</div>', unsafe_allow_html=True)
         with st.container():
             st.markdown("""<div class="card">""", unsafe_allow_html=True)
@@ -848,24 +849,36 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
                     st.markdown(prompt)
 
                 with st.chat_message("assistant"):
-                    with st.spinner("Thinking..."):
-                        try:
+                    message_placeholder = st.empty()
+                    full_response = ""
+                    sources = [] # Initialize here to be safe
+
+                    try:
+                        with st.spinner("Thinking..."):
                             qa_chain = get_qa_chain(st.session_state.vector_store, llm)
                             if qa_chain:
-                                # CORRECTED: Using .invoke for a single, reliable call that gets answer and sources.
                                 response = qa_chain.invoke({"question": prompt})
                                 full_response = response.get("answer", "I couldn't find an answer.")
                                 source_docs = response.get("source_documents", [])
                                 sources = list(set([doc.metadata.get('source') for doc in source_docs if doc.metadata.get('source')]))
-                                
-                                st.markdown(full_response)
-                                if sources:
-                                    st.markdown("**Sources:**")
-                                    st.markdown(" ".join([f"<div class='source-chip'>{os.path.basename(source)}</div>" for source in sources]), unsafe_allow_html=True)
-                                
-                                st.session_state.messages.append({"role": "assistant", "content": full_response, "sources": sources})
                             else:
-                                st.error("QA chain is not initialized.")
-                        except Exception as e:
-                            st.error(f"Query error: {e}")
+                                full_response = "Error: QA chain is not initialized."
+                    
+                    except Exception as e:
+                        # FIX: Initialize sources to an empty list in case of an error
+                        sources = []
+                        full_response = f"An error occurred while querying the AI: {e}"
+                        st.error(full_response)
+                    
+                    # Display the final response
+                    message_placeholder.markdown(full_response)
+                    if sources:
+                        st.markdown("**Sources:**")
+                        st.markdown(" ".join([f"<div class='source-chip'>{os.path.basename(source)}</div>" for source in sources]), unsafe_allow_html=True)
+                    
+                    # Append the complete message to session state
+                    st.session_state.messages.append({"role": "assistant", "content": full_response, "sources": sources})
+                    # Rerun to clear the spinner and finalize the display
+                    st.rerun() 
+            
             st.markdown("</div>", unsafe_allow_html=True)
