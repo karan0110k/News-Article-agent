@@ -11,3 +11,27 @@ langchain-together
 gTTS
 requests
 nest-asyncio
+langchain
+langchain-community
+langchain-openai
+openai
+python-dotenv
+tiktoken
+
+# UI Framework
+streamlit
+
+# Vector Store
+faiss-cpu
+
+# Document Loaders
+pypdf
+unstructured[html]
+
+# Voice I/O
+murf
+google-cloud-speech
+sounddevice
+scipy
+gtts
+
