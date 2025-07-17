@@ -409,6 +409,18 @@ if 'domain' not in st.session_state:
 if 'feedback' not in st.session_state:
     st.session_state.feedback = {}
 
+# --- Global Variables / Paths ---
+FAISS_INDEX_DIR = "faiss_news_indexes"
+os.makedirs(FAISS_INDEX_DIR, exist_ok=True)
+
+# Initialize session state variables
+if 'summaries' not in st.session_state:
+    st.session_state.summaries = []
+if 'domain' not in st.session_state:
+    st.session_state.domain = "Finance"
+if 'feedback' not in st.session_state:
+    st.session_state.feedback = {}
+
 # --- Helper Functions ---
 def is_valid_url(url):
     try:
@@ -460,18 +472,27 @@ def text_to_speech(text):
 def create_and_save_vector_store(urls, _embeddings_model):
     urls_string = "\n".join(sorted(urls))
     index_hash = hashlib.md5(urls_string.encode()).hexdigest()
-    index_file_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}.pkl")
+    # Use a subdirectory for each index to save all FAISS files
+    index_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}")
 
-    if os.path.exists(index_file_path):
+    # Check if the FAISS index directory exists
+    if os.path.exists(index_path):
         try:
-            with open(index_file_path, "rb") as f:
-                return pickle.load(f)
-        except (pickle.UnpicklingError, EOFError):
-            logging.warning("Failed to load cached index, rebuilding.")
+            with st.spinner(f"💾 Loading cached index from {index_path}..."):
+                # Load the FAISS index using load_local
+                vectorstore = FAISS.load_local(index_path, _embeddings_model, allow_dangerous_deserialization=True)
+            st.success("Loaded cached knowledge base!")
+            return vectorstore
+        except Exception as e:
+            logging.warning(f"Failed to load cached index from {index_path}: {e}. Rebuilding.")
+            # Clean up potentially corrupted index
+            if os.path.exists(index_path):
+                import shutil
+                shutil.rmtree(index_path)
 
     with st.spinner("🔍 Validating URLs..."):
         valid_urls = [url for url in urls if is_valid_url(url)]
-    
+        
     if not valid_urls:
         raise ValueError("No valid URLs provided or all URLs failed to connect. Please check the links.")
 
@@ -493,7 +514,7 @@ def create_and_save_vector_store(urls, _embeddings_model):
         docs = text_splitter.split_documents(data)
     if not docs:
         raise ValueError("Failed to split documents. The content might be empty.")
-    
+        
     try:
         with st.spinner("🧠 Creating vector embeddings..."):
             vectorstore = FAISS.from_documents(docs, _embeddings_model)
@@ -501,12 +522,15 @@ def create_and_save_vector_store(urls, _embeddings_model):
         raise RuntimeError(f"Failed to create vector embeddings. Error: {e}")
 
     try:
-        with open(index_file_path, "wb") as f:
-            pickle.dump(vectorstore, f)
+        with st.spinner(f"💾 Saving vector store to {index_path}..."):
+            # Save the FAISS index using save_local
+            vectorstore.save_local(index_path)
     except Exception as e:
-        logging.error(f"Failed to save vector store cache: {e}")
+        logging.error(f"Failed to save vector store: {e}")
 
     return vectorstore
+
+# ... (rest of your functions and Streamlit UI code) ...
 
 def get_qa_chain(_vectorstore, _llm_model):
     if not _vectorstore or not _llm_model:
