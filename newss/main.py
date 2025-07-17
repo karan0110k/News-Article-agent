@@ -10,7 +10,6 @@ import datetime
 import re
 from gtts import gTTS
 import io
-import shutil # Added for directory removal
 
 # LangChain Imports
 from langchain_community.document_loaders import UnstructuredURLLoader
@@ -231,6 +230,34 @@ st.markdown("""
         box-shadow: 0 3px 10px rgba(0,0,0,0.1);
     }
     
+    .domain-btn {
+        flex: 1;
+        min-width: 100px;
+        text-align: center;
+        padding: 10px 15px;
+        border-radius: 8px;
+        background-color: #1a2535;
+        color: var(--text);
+        cursor: pointer;
+        transition: all 0.3s;
+        border: 1px solid var(--border);
+        font-size: 0.95rem;
+        margin: 0 5px 10px 0;
+        font-weight: 500;
+    }
+    
+    .domain-btn:hover {
+        background-color: #233044;
+        transform: translateY(-2px);
+    }
+    
+    .domain-btn.active {
+        background: linear-gradient(135deg, var(--accent), var(--primary));
+        color: white;
+        border-color: var(--primary);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    }
+    
     /* Sidebar styling */
     [data-testid="stSidebar"] {
         background-color: #0f172a;
@@ -278,27 +305,11 @@ st.markdown("""
         margin-bottom: 10px;
     }
     
-    [data-testid="stChatMessage"] > div:first-child {
-        /* This targets the container with the avatar and message */
-        display: flex;
-        flex-direction: row;
-        gap: 0.8rem;
-        align-items: flex-start;
-    }
-
-    [data-testid="stChatMessageContent"] {
-        /* This is the content block */
-        border-radius: 12px;
-        padding: 14px 18px;
-        margin-bottom: 10px;
-        width: 100%;
-    }
-
-    [data-testid="stChatMessageContent"][data-testid="stChatMessageContent-user"] {
+    .stChatMessage.user {
         background-color: rgba(52, 152, 219, 0.15);
     }
-
-    [data-testid="stChatMessageContent"][data-testid="stChatMessageContent-assistant"] {
+    
+    .stChatMessage.assistant {
         background-color: rgba(30, 41, 59, 0.8);
         border: 1px solid var(--border);
     }
@@ -331,7 +342,7 @@ st.markdown("""
     /* Domain grid */
     .domain-grid {
         display: grid;
-        grid-template-columns: repeat(2, 1fr); /* Changed to 2 columns for better fit */
+        grid-template-columns: repeat(3, 1fr);
         gap: 10px;
         margin-bottom: 1.5rem;
     }
@@ -387,7 +398,7 @@ def get_kluster_llm_and_embeddings():
 llm, embeddings = get_kluster_llm_and_embeddings()
 
 # --- Global Variables / Paths ---
-FAISS_INDEX_DIR = "faiss_store" # CORRECTED: Consolidated to one variable
+FAISS_INDEX_DIR = "faiss_news_indexes"
 os.makedirs(FAISS_INDEX_DIR, exist_ok=True)
 
 # Initialize session state variables
@@ -397,17 +408,6 @@ if 'domain' not in st.session_state:
     st.session_state.domain = "Finance"
 if 'feedback' not in st.session_state:
     st.session_state.feedback = {}
-if 'vector_store' not in st.session_state:
-    st.session_state.vector_store = None
-if 'all_docs' not in st.session_state:
-    st.session_state.all_docs = None
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-if 'overall_summary' not in st.session_state:
-    st.session_state.overall_summary = ""
-if 'last_processed_urls_string' not in st.session_state:
-    st.session_state.last_processed_urls_string = ""
-
 
 # --- Helper Functions ---
 def is_valid_url(url):
@@ -439,11 +439,11 @@ def detect_companies_and_impacts(text):
     companies = list(set(re.findall(company_pattern, text)))
     
     # Filter out common non-company words
-    non_companies = ["The", "This", "That", "It", "They", "We", "You", "Article", "Report", "Analysis", "Summary", "Key", "Developments"]
+    non_companies = ["The", "This", "That", "It", "They", "We", "You", "Article", "Report", "Analysis", "Summary"]
     companies = [c for c in companies if c not in non_companies and len(c) > 3][:5]
     
     impact_keywords = ["merger", "acquisition", "profit", "drop", "ipo", "launch", 
-                       "crisis", "growth", "decline", "regulation", "investment", "expansion"]
+                      "crisis", "growth", "decline", "regulation", "investment", "expansion"]
     impacts = [word for word in impact_keywords if word in text.lower()]
     
     return companies, impacts
@@ -457,25 +457,21 @@ def text_to_speech(text):
 
 # --- LangChain Workflow Functions ---
 @st.cache_resource(hash_funcs={OpenAIEmbeddings: lambda _: None})
-def create_and_save_vector_store(_embeddings_model, urls):
+def create_and_save_vector_store(urls, _embeddings_model):
     urls_string = "\n".join(sorted(urls))
     index_hash = hashlib.md5(urls_string.encode()).hexdigest()
-    index_dir_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}")
+    index_file_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}.pkl")
 
-    if os.path.exists(index_dir_path):
+    if os.path.exists(index_file_path):
         try:
-            # CORRECTED: Added allow_dangerous_deserialization=True, which is required for recent langchain versions
-            vectorstore = FAISS.load_local(index_dir_path, _embeddings_model, allow_dangerous_deserialization=True)
-            # Load docs from a pickle file to avoid reprocessing
-            with open(os.path.join(index_dir_path, "docs.pkl"), "rb") as f:
-                docs = pickle.load(f)
-            return vectorstore, docs
-        except Exception as e:
-            logging.warning(f"⚠️ Failed to load cached FAISS index, rebuilding... Error: {e}")
+            with open(index_file_path, "rb") as f:
+                return pickle.load(f)
+        except (pickle.UnpicklingError, EOFError):
+            logging.warning("Failed to load cached index, rebuilding.")
 
     with st.spinner("🔍 Validating URLs..."):
         valid_urls = [url for url in urls if is_valid_url(url)]
-
+    
     if not valid_urls:
         raise ValueError("No valid URLs provided or all URLs failed to connect. Please check the links.")
 
@@ -497,20 +493,20 @@ def create_and_save_vector_store(_embeddings_model, urls):
         docs = text_splitter.split_documents(data)
     if not docs:
         raise ValueError("Failed to split documents. The content might be empty.")
-
+    
     try:
         with st.spinner("🧠 Creating vector embeddings..."):
             vectorstore = FAISS.from_documents(docs, _embeddings_model)
-            os.makedirs(index_dir_path, exist_ok=True)
-            vectorstore.save_local(index_dir_path)
-            # Save the processed docs as well
-            with open(os.path.join(index_dir_path, "docs.pkl"), "wb") as f:
-                pickle.dump(docs, f)
-
     except Exception as e:
-        raise RuntimeError(f"Failed to create/save vector embeddings. Error: {e}")
+        raise RuntimeError(f"Failed to create vector embeddings. Error: {e}")
 
-    return vectorstore, docs
+    try:
+        with open(index_file_path, "wb") as f:
+            pickle.dump(vectorstore, f)
+    except Exception as e:
+        logging.error(f"Failed to save vector store cache: {e}")
+
+    return vectorstore
 
 def get_qa_chain(_vectorstore, _llm_model):
     if not _vectorstore or not _llm_model:
@@ -562,12 +558,12 @@ def get_fast_summary_chain(_llm_model):
 
 def get_deep_summary_chain(_llm_model):
     summary_template = """You are an expert news analyst. Create a comprehensive analysis based on the provided text from news articles.
-    Structure your response with the following sections using Markdown formatting:
-    1. **Key Developments**: What are the main events or changes described?
-    2. **Implications**: What are the potential consequences or impacts?
-    3. **Stakeholders**: Who is affected by these developments?
-    4. **Critical Analysis**: What are the strengths and weaknesses of the arguments presented?
-    5. **TL;DR**: A 2-sentence summary of the most important points
+    Structure your response with the following sections:
+    1. Key Developments: What are the main events or changes described?
+    2. Implications: What are the potential consequences or impacts?
+    3. Stakeholders: Who is affected by these developments?
+    4. Critical Analysis: What are the strengths and weaknesses of the arguments presented?
+    5. TL;DR: A 2-sentence summary of the most important points
     
     Text:
     {text}
@@ -595,11 +591,12 @@ with st.sidebar:
     domains = ["Finance", "Politics", "Technology", "Health", "Global", "Science"]
     
     # Create domain buttons in a grid
-    cols = st.columns(2)
-    for i, domain in enumerate(domains):
-        if cols[i % 2].button(domain, key=f"domain_{domain}", use_container_width=True):
+    st.markdown('<div class="domain-grid">', unsafe_allow_html=True)
+    for domain in domains:
+        if st.button(domain, key=f"domain_{domain}", 
+                     type="primary" if st.session_state.domain == domain else "secondary"):
             st.session_state.domain = domain
-            st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
     
     st.markdown(f"**Selected:** `{st.session_state.domain}`")
     st.divider()
@@ -625,14 +622,12 @@ with st.sidebar:
     # System Controls
     st.markdown("### ⚙️ System Controls")
     if st.button("🔄 Reset System", use_container_width=True, key="clear_kb"):
-        # CORRECTED: Use shutil.rmtree to safely delete the entire cache directory
         if os.path.exists(FAISS_INDEX_DIR):
-            try:
-                shutil.rmtree(FAISS_INDEX_DIR)
-            except OSError as e:
-                st.error(f"Error removing cache directory: {e}")
+            for file_name in os.listdir(FAISS_INDEX_DIR):
+                if file_name.endswith(".pkl"):
+                    os.remove(os.path.join(FAISS_INDEX_DIR, file_name))
         
-        keys_to_clear = ['vector_store', 'all_docs', 'last_processed_urls_string', 'messages', 'overall_summary', 'summaries', 'feedback']
+        keys_to_clear = ['vector_store', 'urls_processed', 'last_processed_urls_string', 'messages', 'overall_summary', 'summaries']
         for key in keys_to_clear:
             if key in st.session_state:
                 del st.session_state[key]
@@ -644,23 +639,23 @@ with st.sidebar:
     st.divider()
     
     # Indexed Sources
-    if 'last_processed_urls_string' in st.session_state and st.session_state.last_processed_urls_string:
+    if 'vector_store' in st.session_state and st.session_state.vector_store:
         st.markdown("### 📌 Source Articles")
         urls = st.session_state.last_processed_urls_string.splitlines()
         for i, url in enumerate(urls[:3]):  # Show first 3
-            st.markdown(f"<div style='font-size: 0.85rem; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{i+1}. {url}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size: 0.85rem; margin-bottom: 6px;'>{i+1}. {url}</div>", unsafe_allow_html=True)
         if len(urls) > 3:
             with st.expander(f"Show all ({len(urls)})"):
                 for i, url in enumerate(urls[3:]):
-                    st.markdown(f"<div style='font-size: 0.85rem; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>{i+4}. {url}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-size: 0.85rem; margin-bottom: 6px;'>{i+4}. {url}</div>", unsafe_allow_html=True)
 
 # Main content area
 st.markdown('<div class="section-title">📥 Source Input</div>', unsafe_allow_html=True)
 with st.container():
     st.markdown("""<div class="card">""", unsafe_allow_html=True)
     urls_input = st.text_area("Enter news URLs (one per line):", height=150, 
-                              placeholder="https://www.example.com/article1\nhttps://www.example.com/article2", 
-                              key="url_input")
+                             placeholder="https://www.example.com/article1\nhttps://www.example.com/article2", 
+                             key="url_input")
     
     process_col, _ = st.columns([1, 3])
     with process_col:
@@ -670,13 +665,11 @@ with st.container():
             else:
                 current_urls_list = sorted([url.strip() for url in urls_input.split('\n') if url.strip()])
                 try:
-                    with st.spinner("Processing articles... This may take a moment."):
-                        # CORRECTED: Now returns both vector_store and docs
-                        vector_store_temp, docs_temp = create_and_save_vector_store(embeddings, current_urls_list)
+                    with st.spinner("Processing articles..."):
+                        vector_store_temp = create_and_save_vector_store(current_urls_list, embeddings)
                         st.session_state.vector_store = vector_store_temp
-                        st.session_state.all_docs = docs_temp # CORRECTED: Store docs for later use
+                        st.session_state.urls_processed = True
                         st.session_state.last_processed_urls_string = "\n".join(current_urls_list)
-                        # Reset chat and summary when new articles are processed
                         st.session_state.messages = []
                         st.session_state.overall_summary = ""
                     st.success("Knowledge base created successfully")
@@ -693,33 +686,31 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
         st.markdown("""<div class="card">""", unsafe_allow_html=True)
         st.markdown("""<div class="card-header">ANALYTICAL TOOLS</div>""", unsafe_allow_html=True)
         
+        # Analysis Type Selection
         col1, col2 = st.columns(2)
         with col1:
             if st.button("⚡ FAST SUMMARY", use_container_width=True, key="fast_summary"):
                 with st.spinner("Generating concise summary..."):
                     try:
-                        # CORRECTED: Using the stored `all_docs` instead of unsafe internal access
-                        if st.session_state.all_docs:
-                            full_text = "\n\n".join([doc.page_content for doc in st.session_state.all_docs])
+                        all_docs = list(st.session_state.vector_store.docstore._dict.values())
+                        if all_docs:
+                            full_text = "\n\n".join([doc.page_content for doc in all_docs])
                             summary_chain = get_fast_summary_chain(llm)
-                            # CORRECTED: Using .invoke() instead of deprecated .run()
-                            response = summary_chain.invoke({"text": full_text})
-                            st.session_state.overall_summary = response.get('text', 'Failed to generate summary.')
+                            st.session_state.overall_summary = summary_chain.run({"text": full_text})
                             st.session_state.summary_type = "Fast"
                             st.rerun()
                     except Exception as e:
                         st.error(f"Analysis error: {e}")
-        
+            
         with col2:
             if st.button("🎯 DEEP ANALYSIS", use_container_width=True, key="deep_summary"):
                 with st.spinner("Performing comprehensive analysis..."):
                     try:
-                        if st.session_state.all_docs:
-                            full_text = "\n\n".join([doc.page_content for doc in st.session_state.all_docs])
+                        all_docs = list(st.session_state.vector_store.docstore._dict.values())
+                        if all_docs:
+                            full_text = "\n\n".join([doc.page_content for doc in all_docs])
                             summary_chain = get_deep_summary_chain(llm)
-                            # CORRECTED: Using .invoke() instead of deprecated .run()
-                            response = summary_chain.invoke({"text": full_text})
-                            st.session_state.overall_summary = response.get('text', 'Failed to generate analysis.')
+                            st.session_state.overall_summary = summary_chain.run({"text": full_text})
                             st.session_state.summary_type = "Deep"
                             st.rerun()
                     except Exception as e:
@@ -729,156 +720,168 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
         if st.session_state.get('overall_summary'):
             st.markdown("""<div class="insight-card">""", unsafe_allow_html=True)
             
-            summary_text = st.session_state.overall_summary
-            sentiment, polarity = analyze_sentiment(summary_text)
-            companies, impacts = detect_companies_and_impacts(summary_text)
+            # Sentiment Analysis
+            sentiment, polarity = analyze_sentiment(st.session_state.overall_summary)
+            
+            # Company and Impact Detection
+            companies, impacts = detect_companies_and_impacts(st.session_state.overall_summary)
             
             # Display metadata
             st.markdown(f"**Analysis Type:** {st.session_state.get('summary_type', 'N/A')}")
             sentiment_class = "sentiment-positive" if "Positive" in sentiment else "sentiment-negative" if "Negative" in sentiment else "sentiment-neutral"
-            st.markdown(f"**Sentiment:** <span class='sentiment-tag {sentiment_class}'>{sentiment}</span>", unsafe_allow_html=True)
+            st.markdown(f"**Sentiment:** <span class='{sentiment_class}'>{sentiment}</span>", unsafe_allow_html=True)
             
-            meta_col1, meta_col2 = st.columns(2)
-            with meta_col1:
-                if companies:
-                    st.markdown("**Key Entities:**")
-                    st.markdown(" ".join([f"<span class='company-tag'>{company}</span>" for company in companies]), unsafe_allow_html=True)
-            with meta_col2:
-                if impacts:
-                    st.markdown("**Impact Areas:**")
-                    st.markdown(" ".join([f"<span class='impact-tag'>{impact.capitalize()}</span>" for impact in impacts]), unsafe_allow_html=True)
+            if companies:
+                st.markdown("**Key Entities:**")
+                for company in companies[:5]:  # Limit to 5 companies
+                    st.markdown(f"<div class='company-tag'>{company}</div>", unsafe_allow_html=True)
             
-            st.divider()
+            if impacts:
+                st.markdown("**Impact Areas:**")
+                for impact in impacts:
+                    st.markdown(f"<div class='impact-tag'>{impact.capitalize()}</div>", unsafe_allow_html=True)
+            
+            st.markdown("</div>", unsafe_allow_html=True)
             
             # Summary content
-            st.markdown(summary_text)
+            st.markdown("**Summary:**")
+            st.markdown(st.session_state.overall_summary)
             
-            st.divider()
-            
-            # Action buttons
-            action_cols = st.columns([1, 1, 1, 1, 1])
-            with action_cols[0]:
-                if st.button("👍", help="Approve Summary"):
+            # Human-in-the-loop Controls
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("👍 Approve", use_container_width=True):
                     st.session_state.feedback['summary'] = "Approved"
-                    st.toast("Feedback recorded!", icon="✅")
-            with action_cols[1]:
-                if st.button("👎", help="Revise Summary"):
+                    st.success("Feedback recorded!")
+            with col2:
+                if st.button("👎 Revise", use_container_width=True):
                     st.session_state.feedback['summary'] = "Needs Revision"
-                    st.toast("Feedback recorded!", icon="⚠️")
-            with action_cols[2]:
-                if st.button("🔄", help="Regenerate Summary"):
+                    st.warning("Feedback recorded!")
+            with col3:
+                if st.button("🔄 Regenerate", use_container_width=True):
                     del st.session_state.overall_summary
                     st.rerun()
-            with action_cols[3]:
-                if st.button("🔊", help="Listen to Summary"):
+            
+            # Additional features
+            col1, col2 = st.columns(2)
+            with col1:
+                # Text-to-Speech
+                if st.button("🔊 Listen to Summary", key="tts", use_container_width=True, 
+                            help="Convert summary to audio"):
                     with st.spinner("Generating audio..."):
-                        audio_bytes = text_to_speech(summary_text)
+                        audio_bytes = text_to_speech(st.session_state.overall_summary)
                         st.audio(audio_bytes, format='audio/mp3')
-            with action_cols[4]:
-                if st.button("💾", help="Save to Timeline"):
+            
+            with col2:
+                # Save to timeline
+                if st.button("💾 Save to Timeline", use_container_width=True):
                     timestamp = datetime.datetime.now()
                     summary_entry = {
                         "timestamp": timestamp,
                         "domain": st.session_state.domain,
-                        "summary": summary_text,
+                        "summary": st.session_state.overall_summary,
                         "sentiment": sentiment,
                         "companies": companies,
                         "type": st.session_state.get('summary_type', 'N/A')
                     }
                     st.session_state.summaries.append(summary_entry)
-                    st.toast(f"Saved to timeline at {timestamp.strftime('%H:%M:%S')}", icon="💾")
+                    st.success(f"Summary saved to timeline at {timestamp.strftime('%H:%M:%S')}")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        # Timeline View
-        if st.session_state.summaries:
-            st.markdown('<div class="section-title">⏳ Analysis Timeline</div>', unsafe_allow_html=True)
-            with st.container():
-                st.markdown("""<div class="card">""", unsafe_allow_html=True)
-                st.markdown("""<div class="card-header">HISTORICAL INSIGHTS</div>""", unsafe_allow_html=True)
-                
-                # Group by date
-                summaries_by_date = {}
-                for summary in st.session_state.summaries:
-                    date_str = summary['timestamp'].strftime('%Y-%m-%d')
-                    if date_str not in summaries_by_date:
-                        summaries_by_date[date_str] = []
-                    summaries_by_date[date_str].append(summary)
-                
-                # Display timeline
-                for date_str, daily_summaries in sorted(summaries_by_date.items(), reverse=True):
-                    st.subheader(date_str)
-                    
-                    for summary in sorted(daily_summaries, key=lambda x: x['timestamp'], reverse=True):
-                        with st.container():
-                            st.markdown(f"""<div class="timeline-event">""", unsafe_allow_html=True)
-                            
-                            sentiment_class = "sentiment-positive" if "Positive" in summary['sentiment'] else "sentiment-negative" if "Negative" in summary['sentiment'] else "sentiment-neutral"
-                            
-                            st.markdown(f"**{summary['timestamp'].strftime('%H:%M')}** - {summary['type']} Analysis ({summary['domain']})")
-                            st.markdown(f"**Sentiment:** <span class='sentiment-tag {sentiment_class}'>{summary['sentiment']}</span>", unsafe_allow_html=True)
-                            
-                            if summary['companies']:
-                                st.markdown("**Key Entities:** " + " ".join([f"<span class='company-tag'>{company}</span>" for company in summary['companies'][:3]]), unsafe_allow_html=True)
-                            
-                            with st.expander("View Summary"):
-                                st.markdown(summary['summary'])
-                                
-                            st.markdown("</div>", unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-
-        # Research Assistant
-        # Research Assistant
-        st.markdown('<div class="section-title">💬 Research Assistant</div>', unsafe_allow_html=True)
+    # Timeline View
+    if st.session_state.summaries:
+        st.markdown('<div class="section-title">⏳ Analysis Timeline</div>', unsafe_allow_html=True)
         with st.container():
             st.markdown("""<div class="card">""", unsafe_allow_html=True)
-            st.markdown("""<div class="card-header">ASK QUESTIONS</div>""", unsafe_allow_html=True)
-            if "messages" not in st.session_state or not st.session_state.messages:
-                st.session_state.messages = [{"role": "assistant", "content": "Analysis complete. Ask me anything about the articles.", "sources": []}]
-
-            for msg in st.session_state.messages:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
-                    if msg["role"] == "assistant" and msg.get("sources"):
-                        st.markdown("**Sources:**")
-                        st.markdown(" ".join([f"<div class='source-chip'>{os.path.basename(source)}</div>" for source in msg["sources"]]), unsafe_allow_html=True)
-
-            if prompt := st.chat_input("Ask about the articles..."):
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
-
-                with st.chat_message("assistant"):
-                    message_placeholder = st.empty()
-                    full_response = ""
-                    sources = [] # Initialize here to be safe
-
-                    try:
-                        with st.spinner("Thinking..."):
-                            qa_chain = get_qa_chain(st.session_state.vector_store, llm)
-                            if qa_chain:
-                                response = qa_chain.invoke({"question": prompt})
-                                full_response = response.get("answer", "I couldn't find an answer.")
-                                source_docs = response.get("source_documents", [])
-                                sources = list(set([doc.metadata.get('source') for doc in source_docs if doc.metadata.get('source')]))
-                            else:
-                                full_response = "Error: QA chain is not initialized."
-                    
-                    except Exception as e:
-                        # FIX: Initialize sources to an empty list in case of an error
-                        sources = []
-                        full_response = f"An error occurred while querying the AI: {e}"
-                        st.error(full_response)
-                    
-                    # Display the final response
-                    message_placeholder.markdown(full_response)
-                    if sources:
-                        st.markdown("**Sources:**")
-                        st.markdown(" ".join([f"<div class='source-chip'>{os.path.basename(source)}</div>" for source in sources]), unsafe_allow_html=True)
-                    
-                    # Append the complete message to session state
-                    st.session_state.messages.append({"role": "assistant", "content": full_response, "sources": sources})
-                    # Rerun to clear the spinner and finalize the display
-                    st.rerun() 
+            st.markdown("""<div class="card-header">HISTORICAL INSIGHTS</div>""", unsafe_allow_html=True)
             
+            # Group by date
+            summaries_by_date = {}
+            for summary in st.session_state.summaries:
+                date_str = summary['timestamp'].strftime('%Y-%m-%d')
+                if date_str not in summaries_by_date:
+                    summaries_by_date[date_str] = []
+                summaries_by_date[date_str].append(summary)
+            
+            # Display timeline
+            for date_str, daily_summaries in sorted(summaries_by_date.items(), reverse=True):
+                st.subheader(date_str)
+                
+                for summary in daily_summaries:
+                    with st.container():
+                        st.markdown(f"""<div class="timeline-event">""", unsafe_allow_html=True)
+                        
+                        sentiment_class = "sentiment-positive" if "Positive" in summary['sentiment'] else "sentiment-negative" if "Negative" in summary['sentiment'] else "sentiment-neutral"
+                        
+                        st.markdown(f"**{summary['timestamp'].strftime('%H:%M')}** - {summary['type']} Analysis")
+                        st.markdown(f"**Domain:** {summary['domain']}")
+                        st.markdown(f"**Sentiment:** <span class='{sentiment_class}'>{summary['sentiment']}</span>", unsafe_allow_html=True)
+                        
+                        if summary['companies']:
+                            st.markdown("**Key Entities:**")
+                            for company in summary['companies'][:3]:  # Limit to 3 companies
+                                st.markdown(f"<div class='company-tag'>{company}</div>", unsafe_allow_html=True)
+                        
+                        with st.expander("View Summary"):
+                            st.markdown(summary['summary'])
+                            
+                        st.markdown("</div>", unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
+
+    # Research Assistant
+    st.markdown('<div class="section-title">💬 Research Assistant</div>', unsafe_allow_html=True)
+    with st.container():
+        st.markdown("""<div class="card">""", unsafe_allow_html=True)
+        st.markdown("""<div class="card-header">ASK QUESTIONS</div>""", unsafe_allow_html=True)
+        if "messages" not in st.session_state or not st.session_state.messages:
+            st.session_state.messages = [{"role": "assistant", "content": "Analysis complete. How can I assist with the articles?", "sources": []}]
+
+        for msg in st.session_state.messages:
+            if msg["role"] == "assistant":
+                with st.chat_message("assistant"):
+                    st.markdown(msg["content"])
+                    if msg.get("sources"):
+                        st.markdown("**Sources:**")
+                        for source in msg["sources"]:
+                            st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
+            else:
+                with st.chat_message("user"):
+                    st.markdown(msg["content"])
+
+        if prompt := st.chat_input("Ask about the articles..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                full_response = ""
+                
+                try:
+                    qa_chain = get_qa_chain(st.session_state.vector_store, llm)
+                    if qa_chain:
+                        response_stream = qa_chain.stream({"question": prompt, "chat_history": st.session_state.messages})
+                        for chunk in response_stream:
+                            if "answer" in chunk:
+                                full_response += chunk["answer"]
+                                message_placeholder.markdown(full_response + "▌")
+                        message_placeholder.markdown(full_response)
+                        
+                        retriever = st.session_state.vector_store.as_retriever()
+                        source_docs = retriever.get_relevant_documents(prompt)
+                        sources = list(set([doc.metadata.get('source') for doc in source_docs if doc.metadata.get('source')]))
+                        if sources:
+                            st.markdown("**Sources:**")
+                            for source in sources[:3]:  # Limit to 3 sources
+                                st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
+                    else:
+                        full_response = "Analysis engine not available"
+                        message_placeholder.markdown(full_response)
+
+                except Exception as e:
+                    full_response = f"Query error: {e}"
+                    message_placeholder.markdown(full_response)
+            
+            st.session_state.messages.append({"role": "assistant", "content": full_response, "sources": sources if sources else []})
+        st.markdown("</div>", unsafe_allow_html=True)
