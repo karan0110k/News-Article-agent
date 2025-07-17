@@ -370,7 +370,6 @@ GOOGLE_EMBEDDING_MODEL_NAME = os.getenv("GOOGLE_EMBEDDING_MODEL_NAME")
 
 
 # --- Initialize LLM and Embeddings (Cached for efficiency) ---
-# --- Initialize LLM and Embeddings (Cached for efficiency) ---
 @st.cache_resource
 def get_llm_and_embeddings(): 
     llm = None
@@ -387,7 +386,7 @@ def get_llm_and_embeddings():
             google_api_key=GOOGLE_API_KEY,
             model=GOOGLE_CHAT_MODEL_NAME,
             temperature=0.3,
-            # REMOVE THIS LINE: streaming=True
+            # Removed streaming=True as it's not a direct arg for ChatGoogleGenerativeAI
         )
         # Initialize GoogleGenerativeAIEmbeddings for embeddings
         embeddings = GoogleGenerativeAIEmbeddings(
@@ -706,7 +705,15 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
                     try:
                         all_docs = list(st.session_state.vector_store.docstore._dict.values())
                         if all_docs:
-                            full_text = "\n\n".join([doc.page_content for doc in all_docs])
+                            # --- IMPORTANT: Limit text for summarization to avoid exceeding context window ---
+                            # Estimate ~4 chars per token, so 30,000 chars is roughly 7,500 tokens.
+                            # Adjust MAX_CHARS_FOR_SUMMARY based on chosen model's context window (e.g., gemini-1.5-flash-8b has ~128K context)
+                            # Start smaller (e.g., 5000-10000 chars) if still seeing 500 errors.
+                            MAX_CHARS_FOR_SUMMARY = 30000 
+                            combined_text_raw = "\n\n".join([doc.page_content for doc in all_docs])
+                            full_text = combined_text_raw[:MAX_CHARS_FOR_SUMMARY]
+                            # --- END IMPORTANT LIMITATION ---
+
                             summary_chain = get_fast_summary_chain(llm)
                             response_obj = summary_chain.invoke({"text": full_text})
                             st.session_state.overall_summary = response_obj.content 
@@ -721,7 +728,12 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
                     try:
                         all_docs = list(st.session_state.vector_store.docstore._dict.values())
                         if all_docs:
-                            full_text = "\n\n".join([doc.page_content for doc in all_docs])
+                            # --- IMPORTANT: Limit text for summarization to avoid exceeding context window ---
+                            MAX_CHARS_FOR_SUMMARY = 30000 
+                            combined_text_raw = "\n\n".join([doc.page_content for doc in all_docs])
+                            full_text = combined_text_raw[:MAX_CHARS_FOR_SUMMARY]
+                            # --- END IMPORTANT LIMITATION ---
+
                             summary_chain = get_deep_summary_chain(llm)
                             response_obj = summary_chain.invoke({"text": full_text})
                             st.session_state.overall_summary = response_obj.content 
@@ -838,8 +850,9 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
                         
                         if summary['companies']:
                             st.markdown("**Key Entities:**")
-                            for company in company['companies'][:3]:  # Limit to 3 companies
-                                st.markdown(f"<div class='company-tag'>{company}</div>", unsafe_allow_html=True)
+                            # FIX: Use 'summary['companies']' directly, not 'company['companies']'
+                            for company_item in summary['companies'][:3]:  
+                                st.markdown(f"<div class='company-tag'>{company_item}</div>", unsafe_allow_html=True)
                         
                         with st.expander("View Summary"):
                             st.markdown(summary['summary'])
