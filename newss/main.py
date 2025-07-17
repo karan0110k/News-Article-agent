@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 from dotenv import load_dotenv
-import pickle
 import hashlib
 import requests
 import time
@@ -16,7 +15,6 @@ from langchain_community.document_loaders import UnstructuredURLLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.chains import LLMChain
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import PromptTemplate
@@ -384,19 +382,17 @@ def get_kluster_llm_and_embeddings():
             temperature=0.3,
             streaming=True
         )
-        
-        # Use Kluster's custom embedding model correctly
         embeddings = OpenAIEmbeddings(
             api_key=KLUSTER_API_KEY,
             base_url=KLUSTER_BASE_URL,
-            model=KLUSTER_EMBEDDING_MODEL_NAME  # Use 'model' parameter for custom models
+            model=KLUSTER_EMBEDDING_MODEL_NAME
         )
     except Exception as e:
         st.error(f"Error initializing Kluster AI services: {e}")
         st.stop()
 
     return llm, embeddings
-    
+
 llm, embeddings = get_kluster_llm_and_embeddings()
 
 # --- Global Variables / Paths ---
@@ -458,20 +454,25 @@ def text_to_speech(text):
     return audio_bytes
 
 # --- LangChain Workflow Functions ---
-# ... (previous code remains the same)
-
-@st.cache_resource
+# Modified to use FAISS.save_local and FAISS.load_local
+@st.cache_resource(hash_funcs={OpenAIEmbeddings: lambda _: None})
 def create_and_save_vector_store(urls, _embeddings_model):
     urls_string = "\n".join(sorted(urls))
     index_hash = hashlib.md5(urls_string.encode()).hexdigest()
-    index_dir = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}")
-    
-    # Check if we can load existing index
-    if os.path.exists(index_dir) and os.path.exists(os.path.join(index_dir, "index.faiss")):
+    # Use a directory for FAISS save_local, not a single .pkl file
+    index_dir_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}")
+
+    # Check if the FAISS index directory already exists
+    if os.path.exists(index_dir_path) and os.path.isdir(index_dir_path):
         try:
-            return FAISS.load_local(index_dir, _embeddings_model, allow_dangerous_deserialization=True)
-        except Exception:
-            logging.warning("Failed to load cached index, rebuilding.")
+            # Load the FAISS index from the directory
+            return FAISS.load_local(index_dir_path, _embeddings_model, allow_dangerous_deserialization=True)
+        except Exception as e:
+            logging.warning(f"Failed to load cached index from {index_dir_path}, rebuilding. Error: {e}")
+            # Clean up potentially corrupted directory
+            if os.path.exists(index_dir_path):
+                import shutil
+                shutil.rmtree(index_dir_path)
 
     with st.spinner("🔍 Validating URLs..."):
         valid_urls = [url for url in urls if is_valid_url(url)]
@@ -505,15 +506,14 @@ def create_and_save_vector_store(urls, _embeddings_model):
         raise RuntimeError(f"Failed to create vector embeddings. Error: {e}")
 
     try:
-        # Save using FAISS's built-in method instead of pickling
-        os.makedirs(index_dir, exist_ok=True)
-        vectorstore.save_local(index_dir)
+        # Save the FAISS index to the specified directory
+        vectorstore.save_local(index_dir_path)
     except Exception as e:
-        logging.error(f"Failed to save vector store: {e}")
+        logging.error(f"Failed to save vector store using FAISS.save_local: {e}")
 
     return vectorstore
 
-# ... (rest of the code remains the same)
+
 def get_qa_chain(_vectorstore, _llm_model):
     if not _vectorstore or not _llm_model:
         return None
@@ -553,14 +553,14 @@ def get_qa_chain(_vectorstore, _llm_model):
 def get_fast_summary_chain(_llm_model):
     summary_template = """You are an expert news summarizer. Create a concise executive summary based on the provided text from news articles.
     Focus on the main themes and key developments mentioned. Keep it to 3-4 paragraphs.
-    
+
     Text:
     {text}
-    
+
     Executive Summary:
     """
     summary_prompt = PromptTemplate.from_template(summary_template)
-    return LLMChain(llm=_llm_model, prompt=summary_prompt)
+    return summary_prompt | _llm_model
 
 def get_deep_summary_chain(_llm_model):
     summary_template = """You are an expert news analyst. Create a comprehensive analysis based on the provided text from news articles.
@@ -570,14 +570,14 @@ def get_deep_summary_chain(_llm_model):
     3. Stakeholders: Who is affected by these developments?
     4. Critical Analysis: What are the strengths and weaknesses of the arguments presented?
     5. TL;DR: A 2-sentence summary of the most important points
-    
+
     Text:
     {text}
-    
+
     Comprehensive Analysis:
     """
     summary_prompt = PromptTemplate.from_template(summary_template)
-    return LLMChain(llm=_llm_model, prompt=summary_prompt)
+    return summary_prompt | _llm_model
 
 # --- Streamlit UI Components ---
 st.markdown("""<div class="header-container"><div class="app-title">NewsEdge AI</div><div class="app-subtitle">Multi-Domain News Intelligence Platform</div></div>""", unsafe_allow_html=True)
@@ -629,9 +629,13 @@ with st.sidebar:
     st.markdown("### ⚙️ System Controls")
     if st.button("🔄 Reset System", use_container_width=True, key="clear_kb"):
         if os.path.exists(FAISS_INDEX_DIR):
-            for file_name in os.listdir(FAISS_INDEX_DIR):
-                if file_name.endswith(".pkl"):
-                    os.remove(os.path.join(FAISS_INDEX_DIR, file_name))
+            import shutil
+            for item in os.listdir(FAISS_INDEX_DIR):
+                item_path = os.path.join(FAISS_INDEX_DIR, item)
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+                elif os.path.isfile(item_path):
+                    os.remove(item_path)
         
         keys_to_clear = ['vector_store', 'urls_processed', 'last_processed_urls_string', 'messages', 'overall_summary', 'summaries']
         for key in keys_to_clear:
@@ -672,6 +676,8 @@ with st.container():
                 current_urls_list = sorted([url.strip() for url in urls_input.split('\n') if url.strip()])
                 try:
                     with st.spinner("Processing articles..."):
+                        # Ensure the FAISS_INDEX_DIR exists before trying to save
+                        os.makedirs(FAISS_INDEX_DIR, exist_ok=True)
                         vector_store_temp = create_and_save_vector_store(current_urls_list, embeddings)
                         st.session_state.vector_store = vector_store_temp
                         st.session_state.urls_processed = True
@@ -698,13 +704,22 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
             if st.button("⚡ FAST SUMMARY", use_container_width=True, key="fast_summary"):
                 with st.spinner("Generating concise summary..."):
                     try:
-                        all_docs = list(st.session_state.vector_store.docstore._dict.values())
+                        # Extract content from all docs in the vector store
+                        all_docs = []
+                        # Note: docstore._dict is an internal detail, but generally works.
+                        # For robustness, consider if you need actual documents or just their content.
+                        if st.session_state.vector_store.docstore:
+                            all_docs = list(st.session_state.vector_store.docstore._dict.values())
+                        
                         if all_docs:
                             full_text = "\n\n".join([doc.page_content for doc in all_docs])
                             summary_chain = get_fast_summary_chain(llm)
-                            st.session_state.overall_summary = summary_chain.run({"text": full_text})
+                            # Changed .run() to .invoke() for LCEL compatibility
+                            st.session_state.overall_summary = summary_chain.invoke({"text": full_text})
                             st.session_state.summary_type = "Fast"
                             st.rerun()
+                        else:
+                            st.warning("No documents found in the knowledge base to summarize.")
                     except Exception as e:
                         st.error(f"Analysis error: {e}")
             
@@ -712,13 +727,20 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
             if st.button("🎯 DEEP ANALYSIS", use_container_width=True, key="deep_summary"):
                 with st.spinner("Performing comprehensive analysis..."):
                     try:
-                        all_docs = list(st.session_state.vector_store.docstore._dict.values())
+                        # Extract content from all docs in the vector store
+                        all_docs = []
+                        if st.session_state.vector_store.docstore:
+                            all_docs = list(st.session_state.vector_store.docstore._dict.values())
+
                         if all_docs:
                             full_text = "\n\n".join([doc.page_content for doc in all_docs])
                             summary_chain = get_deep_summary_chain(llm)
-                            st.session_state.overall_summary = summary_chain.run({"text": full_text})
+                            # Changed .run() to .invoke() for LCEL compatibility
+                            st.session_state.overall_summary = summary_chain.invoke({"text": full_text})
                             st.session_state.summary_type = "Deep"
                             st.rerun()
+                        else:
+                            st.warning("No documents found in the knowledge base for deep analysis.")
                     except Exception as e:
                         st.error(f"Analysis error: {e}")
         
@@ -837,57 +859,72 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
 
     # Research Assistant
     st.markdown('<div class="section-title">💬 Research Assistant</div>', unsafe_allow_html=True)
-    with st.container():
-        st.markdown("""<div class="card">""", unsafe_allow_html=True)
-        st.markdown("""<div class="card-header">ASK QUESTIONS</div>""", unsafe_allow_html=True)
-        if "messages" not in st.session_state or not st.session_state.messages:
-            st.session_state.messages = [{"role": "assistant", "content": "Analysis complete. How can I assist with the articles?", "sources": []}]
+with st.container():
+    st.markdown("""<div class="card">""", unsafe_allow_html=True)
+    st.markdown("""<div class="card-header">ASK QUESTIONS</div>""", unsafe_allow_html=True)
 
-        for msg in st.session_state.messages:
-            if msg["role"] == "assistant":
-                with st.chat_message("assistant"):
-                    st.markdown(msg["content"])
-                    if msg.get("sources"):
-                        st.markdown("**Sources:**")
-                        for source in msg["sources"]:
-                            st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
-            else:
-                with st.chat_message("user"):
-                    st.markdown(msg["content"])
+    if "messages" not in st.session_state or not st.session_state.messages:
+        st.session_state.messages = [{
+            "role": "assistant",
+            "content": "Analysis complete. How can I assist with the articles?",
+            "sources": []
+        }]
 
-        if prompt := st.chat_input("Ask about the articles..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
+    for msg in st.session_state.messages:
+        if msg["role"] == "assistant":
             with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                full_response = ""
-                
-                try:
-                    qa_chain = get_qa_chain(st.session_state.vector_store, llm)
-                    if qa_chain:
-                        response_stream = qa_chain.stream({"question": prompt, "chat_history": st.session_state.messages})
-                        for chunk in response_stream:
-                            if "answer" in chunk:
-                                full_response += chunk["answer"]
-                                message_placeholder.markdown(full_response + "▌")
-                        message_placeholder.markdown(full_response)
-                        
-                        retriever = st.session_state.vector_store.as_retriever()
-                        source_docs = retriever.get_relevant_documents(prompt)
-                        sources = list(set([doc.metadata.get('source') for doc in source_docs if doc.metadata.get('source')]))
-                        if sources:
-                            st.markdown("**Sources:**")
-                            for source in sources[:3]:  # Limit to 3 sources
-                                st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
-                    else:
-                        full_response = "Analysis engine not available"
-                        message_placeholder.markdown(full_response)
+                st.markdown(msg["content"])
+                if msg.get("sources"):
+                    st.markdown("**Sources:**")
+                    for source in msg["sources"]:
+                        st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
+        else:
+            with st.chat_message("user"):
+                st.markdown(msg["content"])
 
-                except Exception as e:
-                    full_response = f"Query error: {e}"
+    if prompt := st.chat_input("Ask about the articles..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            full_response = ""
+            sources = []  # ✅ define here to prevent NameError
+
+            try:
+                qa_chain = get_qa_chain(st.session_state.vector_store, llm)
+                if qa_chain:
+                    response_stream = qa_chain.stream({"question": prompt, "chat_history": st.session_state.messages})
+                    for chunk in response_stream:
+                        if "answer" in chunk:
+                            full_response += chunk["answer"]
+                            message_placeholder.markdown(full_response + "▌")
                     message_placeholder.markdown(full_response)
-            
-            st.session_state.messages.append({"role": "assistant", "content": full_response, "sources": sources if sources else []})
-        st.markdown("</div>", unsafe_allow_html=True)
+
+                    retriever = st.session_state.vector_store.as_retriever()
+                    source_docs = retriever.get_relevant_documents(prompt)
+                    sources = list(set([
+                        doc.metadata.get('source')
+                        for doc in source_docs if doc.metadata.get('source')
+                    ]))
+
+                    if sources:
+                        st.markdown("**Sources:**")
+                        for source in sources[:3]:
+                            st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
+                else:
+                    full_response = "Analysis engine not available"
+                    message_placeholder.markdown(full_response)
+
+            except Exception as e:
+                full_response = f"Query error: {e}"
+                message_placeholder.markdown(full_response)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": full_response,
+            "sources": sources
+        })
+
+    st.markdown("</div>", unsafe_allow_html=True)
