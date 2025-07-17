@@ -456,6 +456,7 @@ def text_to_speech(text):
     return audio_bytes
 
 # --- LangChain Workflow Functions ---
+FAISS_INDEX_DIR = "faiss_store"
 @st.cache_resource(hash_funcs={OpenAIEmbeddings: lambda _: None})
 def create_and_save_vector_store(urls, _embeddings_model):
     urls_string = "\n".join(sorted(urls))
