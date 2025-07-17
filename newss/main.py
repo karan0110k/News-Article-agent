@@ -384,17 +384,19 @@ def get_kluster_llm_and_embeddings():
             temperature=0.3,
             streaming=True
         )
+        
+        # Use Kluster's custom embedding model correctly
         embeddings = OpenAIEmbeddings(
             api_key=KLUSTER_API_KEY,
             base_url=KLUSTER_BASE_URL,
-            model=KLUSTER_EMBEDDING_MODEL_NAME
+            model=KLUSTER_EMBEDDING_MODEL_NAME  # Use 'model' parameter for custom models
         )
     except Exception as e:
         st.error(f"Error initializing Kluster AI services: {e}")
         st.stop()
 
     return llm, embeddings
-
+    
 llm, embeddings = get_kluster_llm_and_embeddings()
 
 # --- Global Variables / Paths ---
