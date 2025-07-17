@@ -21,3 +21,6 @@ google-cloud-speech
 sounddevice
 scipy
 gtts
+
+langchain-google-genai 
+
