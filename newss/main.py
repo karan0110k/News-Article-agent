@@ -458,17 +458,19 @@ def text_to_speech(text):
     return audio_bytes
 
 # --- LangChain Workflow Functions ---
-@st.cache_resource(hash_funcs={OpenAIEmbeddings: lambda _: None})
+# ... (previous code remains the same)
+
+@st.cache_resource
 def create_and_save_vector_store(urls, _embeddings_model):
     urls_string = "\n".join(sorted(urls))
     index_hash = hashlib.md5(urls_string.encode()).hexdigest()
-    index_file_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}.pkl")
-
-    if os.path.exists(index_file_path):
+    index_dir = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}")
+    
+    # Check if we can load existing index
+    if os.path.exists(index_dir) and os.path.exists(os.path.join(index_dir, "index.faiss")):
         try:
-            with open(index_file_path, "rb") as f:
-                return pickle.load(f)
-        except (pickle.UnpicklingError, EOFError):
+            return FAISS.load_local(index_dir, _embeddings_model, allow_dangerous_deserialization=True)
+        except Exception:
             logging.warning("Failed to load cached index, rebuilding.")
 
     with st.spinner("🔍 Validating URLs..."):
@@ -503,13 +505,15 @@ def create_and_save_vector_store(urls, _embeddings_model):
         raise RuntimeError(f"Failed to create vector embeddings. Error: {e}")
 
     try:
-        with open(index_file_path, "wb") as f:
-            pickle.dump(vectorstore, f)
+        # Save using FAISS's built-in method instead of pickling
+        os.makedirs(index_dir, exist_ok=True)
+        vectorstore.save_local(index_dir)
     except Exception as e:
-        logging.error(f"Failed to save vector store cache: {e}")
+        logging.error(f"Failed to save vector store: {e}")
 
     return vectorstore
 
+# ... (rest of the code remains the same)
 def get_qa_chain(_vectorstore, _llm_model):
     if not _vectorstore or not _llm_model:
         return None
