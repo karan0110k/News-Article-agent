@@ -9,12 +9,17 @@ import datetime
 import re
 from gtts import gTTS
 import io
+import shutil 
+import nest_asyncio 
+
+nest_asyncio.apply() 
 
 # LangChain Imports
 from langchain_community.document_loaders import UnstructuredURLLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+# NEW IMPORTS FOR GOOGLE GEMINI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings 
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import PromptTemplate
@@ -358,42 +363,43 @@ st.markdown("""
 # --- Load Environment Variables ---
 load_dotenv()
 
-# --- Configuration ---
-KLUSTER_API_KEY = os.getenv("KLUSTER_API_KEY")
-KLUSTER_BASE_URL = os.getenv("KLUSTER_BASE_URL")
-KLUSTER_CHAT_MODEL_NAME = os.getenv("KLUSTER_CHAT_MODEL_NAME")
-KLUSTER_EMBEDDING_MODEL_NAME = os.getenv("KLUSTER_EMBEDDING_MODEL_NAME")
+# --- Configuration (UPDATED FOR GOOGLE GEMINI) ---
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_CHAT_MODEL_NAME = os.getenv("GOOGLE_CHAT_MODEL_NAME")
+GOOGLE_EMBEDDING_MODEL_NAME = os.getenv("GOOGLE_EMBEDDING_MODEL_NAME")
+
 
 # --- Initialize LLM and Embeddings (Cached for efficiency) ---
 @st.cache_resource
-def get_kluster_llm_and_embeddings():
+def get_llm_and_embeddings(): 
     llm = None
     embeddings = None
 
-    if not all([KLUSTER_API_KEY, KLUSTER_BASE_URL, KLUSTER_CHAT_MODEL_NAME, KLUSTER_EMBEDDING_MODEL_NAME]):
-        st.error("One or more Kluster AI credentials are missing from your .env file. Please check.")
+    # Check for Google AI credentials
+    if not all([GOOGLE_API_KEY, GOOGLE_CHAT_MODEL_NAME, GOOGLE_EMBEDDING_MODEL_NAME]):
+        st.error("One or more Google AI credentials (GOOGLE_API_KEY, GOOGLE_CHAT_MODEL_NAME, GOOGLE_EMBEDDING_MODEL_NAME) are missing from your .env file. Please check.")
         st.stop()
         
     try:
-        llm = ChatOpenAI(
-            api_key=KLUSTER_API_KEY,
-            base_url=KLUSTER_BASE_URL,
-            model=KLUSTER_CHAT_MODEL_NAME,
+        # Initialize ChatGoogleGenerativeAI for the main LLM
+        llm = ChatGoogleGenerativeAI( 
+            google_api_key=GOOGLE_API_KEY,
+            model=GOOGLE_CHAT_MODEL_NAME,
             temperature=0.3,
             streaming=True
         )
-        embeddings = OpenAIEmbeddings(
-            api_key=KLUSTER_API_KEY,
-            base_url=KLUSTER_BASE_URL,
-            model=KLUSTER_EMBEDDING_MODEL_NAME
+        # Initialize GoogleGenerativeAIEmbeddings for embeddings
+        embeddings = GoogleGenerativeAIEmbeddings(
+            google_api_key=GOOGLE_API_KEY,
+            model=GOOGLE_EMBEDDING_MODEL_NAME
         )
     except Exception as e:
-        st.error(f"Error initializing Kluster AI services: {e}")
+        st.error(f"Error initializing Google AI services: {e}. Please ensure your API key and model names are correct.")
         st.stop()
 
     return llm, embeddings
 
-llm, embeddings = get_kluster_llm_and_embeddings()
+llm, embeddings = get_llm_and_embeddings()
 
 # --- Global Variables / Paths ---
 FAISS_INDEX_DIR = "faiss_news_indexes"
@@ -454,25 +460,19 @@ def text_to_speech(text):
     return audio_bytes
 
 # --- LangChain Workflow Functions ---
-# Modified to use FAISS.save_local and FAISS.load_local
-@st.cache_resource(hash_funcs={OpenAIEmbeddings: lambda _: None})
+@st.cache_resource(hash_funcs={GoogleGenerativeAIEmbeddings: lambda _: None}) 
 def create_and_save_vector_store(urls, _embeddings_model):
     urls_string = "\n".join(sorted(urls))
     index_hash = hashlib.md5(urls_string.encode()).hexdigest()
-    # Use a directory for FAISS save_local, not a single .pkl file
     index_dir_path = os.path.join(FAISS_INDEX_DIR, f"news_index_{index_hash}")
 
-    # Check if the FAISS index directory already exists
     if os.path.exists(index_dir_path) and os.path.isdir(index_dir_path):
         try:
-            # Load the FAISS index from the directory
             return FAISS.load_local(index_dir_path, _embeddings_model, allow_dangerous_deserialization=True)
         except Exception as e:
             logging.warning(f"Failed to load cached index from {index_dir_path}, rebuilding. Error: {e}")
-            # Clean up potentially corrupted directory
             if os.path.exists(index_dir_path):
-                import shutil
-                shutil.rmtree(index_dir_path)
+                shutil.rmtree(index_dir_path) 
 
     with st.spinner("🔍 Validating URLs..."):
         valid_urls = [url for url in urls if is_valid_url(url)]
@@ -506,7 +506,7 @@ def create_and_save_vector_store(urls, _embeddings_model):
         raise RuntimeError(f"Failed to create vector embeddings. Error: {e}")
 
     try:
-        # Save the FAISS index to the specified directory
+        os.makedirs(index_dir_path, exist_ok=True)
         vectorstore.save_local(index_dir_path)
     except Exception as e:
         logging.error(f"Failed to save vector store using FAISS.save_local: {e}")
@@ -629,7 +629,6 @@ with st.sidebar:
     st.markdown("### ⚙️ System Controls")
     if st.button("🔄 Reset System", use_container_width=True, key="clear_kb"):
         if os.path.exists(FAISS_INDEX_DIR):
-            import shutil
             for item in os.listdir(FAISS_INDEX_DIR):
                 item_path = os.path.join(FAISS_INDEX_DIR, item)
                 if os.path.isdir(item_path):
@@ -704,22 +703,14 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
             if st.button("⚡ FAST SUMMARY", use_container_width=True, key="fast_summary"):
                 with st.spinner("Generating concise summary..."):
                     try:
-                        # Extract content from all docs in the vector store
-                        all_docs = []
-                        # Note: docstore._dict is an internal detail, but generally works.
-                        # For robustness, consider if you need actual documents or just their content.
-                        if st.session_state.vector_store.docstore:
-                            all_docs = list(st.session_state.vector_store.docstore._dict.values())
-                        
+                        all_docs = list(st.session_state.vector_store.docstore._dict.values())
                         if all_docs:
                             full_text = "\n\n".join([doc.page_content for doc in all_docs])
                             summary_chain = get_fast_summary_chain(llm)
-                            # Changed .run() to .invoke() for LCEL compatibility
-                            st.session_state.overall_summary = summary_chain.invoke({"text": full_text})
+                            response_obj = summary_chain.invoke({"text": full_text})
+                            st.session_state.overall_summary = response_obj.content 
                             st.session_state.summary_type = "Fast"
                             st.rerun()
-                        else:
-                            st.warning("No documents found in the knowledge base to summarize.")
                     except Exception as e:
                         st.error(f"Analysis error: {e}")
             
@@ -727,32 +718,29 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
             if st.button("🎯 DEEP ANALYSIS", use_container_width=True, key="deep_summary"):
                 with st.spinner("Performing comprehensive analysis..."):
                     try:
-                        # Extract content from all docs in the vector store
-                        all_docs = []
-                        if st.session_state.vector_store.docstore:
-                            all_docs = list(st.session_state.vector_store.docstore._dict.values())
-
+                        all_docs = list(st.session_state.vector_store.docstore._dict.values())
                         if all_docs:
                             full_text = "\n\n".join([doc.page_content for doc in all_docs])
                             summary_chain = get_deep_summary_chain(llm)
-                            # Changed .run() to .invoke() for LCEL compatibility
-                            st.session_state.overall_summary = summary_chain.invoke({"text": full_text})
+                            response_obj = summary_chain.invoke({"text": full_text})
+                            st.session_state.overall_summary = response_obj.content 
                             st.session_state.summary_type = "Deep"
                             st.rerun()
-                        else:
-                            st.warning("No documents found in the knowledge base for deep analysis.")
                     except Exception as e:
                         st.error(f"Analysis error: {e}")
         
         # Display Summary and Analysis
         if st.session_state.get('overall_summary'):
+            # Extract the actual string content from the AIMessage object (or keep as is if already a string)
+            summary_text_for_analysis = st.session_state.overall_summary
+            if hasattr(summary_text_for_analysis, 'content'):
+                summary_text_for_analysis = summary_text_for_analysis.content
+            
+            # Now use summary_text_for_analysis consistently for all text-based operations
+            sentiment, polarity = analyze_sentiment(summary_text_for_analysis)
+            companies, impacts = detect_companies_and_impacts(summary_text_for_analysis) 
+            
             st.markdown("""<div class="insight-card">""", unsafe_allow_html=True)
-            
-            # Sentiment Analysis
-            sentiment, polarity = analyze_sentiment(st.session_state.overall_summary)
-            
-            # Company and Impact Detection
-            companies, impacts = detect_companies_and_impacts(st.session_state.overall_summary)
             
             # Display metadata
             st.markdown(f"**Analysis Type:** {st.session_state.get('summary_type', 'N/A')}")
@@ -771,10 +759,10 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
             
             st.markdown("</div>", unsafe_allow_html=True)
             
-            # Summary content
+            # Summary content - display only the processed string
             st.markdown("**Summary:**")
-            st.markdown(st.session_state.overall_summary)
-            
+            st.markdown(summary_text_for_analysis) # Display the extracted text
+
             # Human-in-the-loop Controls
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -797,7 +785,8 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
                 if st.button("🔊 Listen to Summary", key="tts", use_container_width=True, 
                             help="Convert summary to audio"):
                     with st.spinner("Generating audio..."):
-                        audio_bytes = text_to_speech(st.session_state.overall_summary)
+                        # Pass the extracted string content for TTS
+                        audio_bytes = text_to_speech(summary_text_for_analysis) 
                         st.audio(audio_bytes, format='audio/mp3')
             
             with col2:
@@ -807,7 +796,7 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
                     summary_entry = {
                         "timestamp": timestamp,
                         "domain": st.session_state.domain,
-                        "summary": st.session_state.overall_summary,
+                        "summary": summary_text_for_analysis, # Save the extracted string
                         "sentiment": sentiment,
                         "companies": companies,
                         "type": st.session_state.get('summary_type', 'N/A')
@@ -848,7 +837,7 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
                         
                         if summary['companies']:
                             st.markdown("**Key Entities:**")
-                            for company in summary['companies'][:3]:  # Limit to 3 companies
+                            for company in company['companies'][:3]:  # Limit to 3 companies
                                 st.markdown(f"<div class='company-tag'>{company}</div>", unsafe_allow_html=True)
                         
                         with st.expander("View Summary"):
@@ -859,72 +848,58 @@ if 'vector_store' in st.session_state and st.session_state.vector_store:
 
     # Research Assistant
     st.markdown('<div class="section-title">💬 Research Assistant</div>', unsafe_allow_html=True)
-with st.container():
-    st.markdown("""<div class="card">""", unsafe_allow_html=True)
-    st.markdown("""<div class="card-header">ASK QUESTIONS</div>""", unsafe_allow_html=True)
+    with st.container():
+        st.markdown("""<div class="card">""", unsafe_allow_html=True)
+        st.markdown("""<div class="card-header">ASK QUESTIONS</div>""", unsafe_allow_html=True)
+        if "messages" not in st.session_state or not st.session_state.messages:
+            st.session_state.messages = [{"role": "assistant", "content": "Analysis complete. How can I assist with the articles?", "sources": []}]
 
-    if "messages" not in st.session_state or not st.session_state.messages:
-        st.session_state.messages = [{
-            "role": "assistant",
-            "content": "Analysis complete. How can I assist with the articles?",
-            "sources": []
-        }]
-
-    for msg in st.session_state.messages:
-        if msg["role"] == "assistant":
-            with st.chat_message("assistant"):
-                st.markdown(msg["content"])
-                if msg.get("sources"):
-                    st.markdown("**Sources:**")
-                    for source in msg["sources"]:
-                        st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
-        else:
-            with st.chat_message("user"):
-                st.markdown(msg["content"])
-
-    if prompt := st.chat_input("Ask about the articles..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            full_response = ""
-            sources = []  # ✅ define here to prevent NameError
-
-            try:
-                qa_chain = get_qa_chain(st.session_state.vector_store, llm)
-                if qa_chain:
-                    response_stream = qa_chain.stream({"question": prompt, "chat_history": st.session_state.messages})
-                    for chunk in response_stream:
-                        if "answer" in chunk:
-                            full_response += chunk["answer"]
-                            message_placeholder.markdown(full_response + "▌")
-                    message_placeholder.markdown(full_response)
-
-                    retriever = st.session_state.vector_store.as_retriever()
-                    source_docs = retriever.get_relevant_documents(prompt)
-                    sources = list(set([
-                        doc.metadata.get('source')
-                        for doc in source_docs if doc.metadata.get('source')
-                    ]))
-
-                    if sources:
+        for msg in st.session_state.messages:
+            if msg["role"] == "assistant":
+                with st.chat_message("assistant"):
+                    st.markdown(msg["content"])
+                    if msg.get("sources"):
                         st.markdown("**Sources:**")
-                        for source in sources[:3]:
+                        for source in msg["sources"]:
                             st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
-                else:
-                    full_response = "Analysis engine not available"
+            else:
+                with st.chat_message("user"):
+                    st.markdown(msg["content"])
+
+        if prompt := st.chat_input("Ask about the articles..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                full_response = ""
+                sources = [] 
+                
+                try:
+                    qa_chain = get_qa_chain(st.session_state.vector_store, llm)
+                    if qa_chain:
+                        response_stream = qa_chain.stream({"question": prompt, "chat_history": st.session_state.messages})
+                        for chunk in response_stream:
+                            if "answer" in chunk: 
+                                full_response += chunk["answer"]
+                                message_placeholder.markdown(full_response + "▌")
+                        message_placeholder.markdown(full_response)
+                        
+                        retriever = st.session_state.vector_store.as_retriever()
+                        source_docs = retriever.get_relevant_documents(prompt)
+                        sources = list(set([doc.metadata.get('source') for doc in source_docs if doc.metadata.get('source')]))
+                        if sources:
+                            st.markdown("**Sources:**")
+                            for source in sources[:3]:  # Limit to 3 sources
+                                st.markdown(f"<div class='source-chip'>{source}</div>", unsafe_allow_html=True)
+                    else:
+                        full_response = "Analysis engine not available (Knowledge base not loaded or AI service error)." 
+                        message_placeholder.markdown(full_response)
+
+                except Exception as e:
+                    full_response = f"Query error: {e}. Please ensure your API key and models are correctly configured." 
                     message_placeholder.markdown(full_response)
-
-            except Exception as e:
-                full_response = f"Query error: {e}"
-                message_placeholder.markdown(full_response)
-
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": full_response,
-            "sources": sources
-        })
-
-    st.markdown("</div>", unsafe_allow_html=True)
+            
+            st.session_state.messages.append({"role": "assistant", "content": full_response, "sources": sources if sources else []})
+        st.markdown("</div>", unsafe_allow_html=True)
